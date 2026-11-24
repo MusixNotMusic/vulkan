@@ -156,7 +156,8 @@ void VulkanApp::createWaterTexture() {
 void VulkanApp::createWaterMesh() {
     std::vector<WaterVertex> vertices;
     std::vector<uint32_t> indices;
-    generateWaterPlane(vertices, indices, 40.0f, 64);
+    // 60x60 单位、192x192 分辨率：保证 Gerstner 波有足够顶点密度
+    generateWaterPlane(vertices, indices, 60.0f, 192);
 
     m_vertexCount = static_cast<uint32_t>(vertices.size());
     m_indexCount  = static_cast<uint32_t>(indices.size());
@@ -314,12 +315,15 @@ void VulkanApp::updateUniformBuffers() {
     float time = std::chrono::duration<float>(
         std::chrono::high_resolution_clock::now() - m_startTime).count();
 
-    // 相机固定在水面上方，轻微旋转
-    Mat4 model = mat4RotateY(time * 0.05f);
-    Mat4 view  = mat4LookAt(
-        20.0f, 18.0f, 20.0f,   // eye
-        0.0f,  0.0f,  0.0f,   // center
-        0.0f,  1.0f,  0.0f);  // up
+    // 模型固定不旋转（Gerstner 波方向保持世界一致）
+    Mat4 model = mat4Identity();
+
+    // 相机：水面上方拉远，展示波面起伏
+    const float eyeX = 26.0f, eyeY = 14.0f, eyeZ = 26.0f;
+    Mat4 view = mat4LookAt(
+        eyeX, eyeY, eyeZ,      // eye
+        0.0f, 0.0f, 0.0f,      // center
+        0.0f, 1.0f, 0.0f);     // up
 
     float aspect = static_cast<float>(m_swapchainExtent.width) /
                    static_cast<float>(std::max(1u, m_swapchainExtent.height));
@@ -330,6 +334,13 @@ void VulkanApp::updateUniformBuffers() {
     copyMatrix(data.view,  view);
     copyMatrix(data.proj,  proj);
     data.time = time;
+    data.cameraPos[0] = eyeX;
+    data.cameraPos[1] = eyeY;
+    data.cameraPos[2] = eyeZ;
+    // 太阳方向（shader 内 normalize）
+    data.sunDir[0] = 0.45f;
+    data.sunDir[1] = 0.65f;
+    data.sunDir[2] = 0.30f;
 
     memcpy(m_uniformBufferMapped[m_currentFrame], &data, sizeof(data));
 }

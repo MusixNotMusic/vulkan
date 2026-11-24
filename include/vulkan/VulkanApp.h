@@ -31,12 +31,18 @@ struct SwapchainSupportDetails {
 };
 
 // MVP + Time Uniform Buffer (std140 布局)
+// GLSL 侧: mat4 model; mat4 view; mat4 proj; float time; vec3 cameraPos; vec3 sunDir;
+// std140 隐式对齐由 pad 数组显式补齐
 struct WaterUniformData {
     float model[16];
     float view[16];
     float proj[16];
     float time;
-    float pad[3]; // 对齐 16 字节
+    float pad[3];          // 对齐 16 字节（已有）
+    float cameraPos[3];    // 新增：世界空间相机位置（Fresnel/高光用）
+    float pad2[1];
+    float sunDir[3];       // 新增：太阳方向（不必归一化，shader 内 normalize）
+    float pad3[1];
 };
 
 class VulkanApp {
