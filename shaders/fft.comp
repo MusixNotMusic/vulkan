@@ -1,0 +1,52 @@
+#version 450
+// FFT 海洋 pass2: 2D IFFT 单 pass（蝴蝶查找表, Cooley-Tukey DIT）
+// 蝴蝶纹理: (idxUpper, idxLower, twiddle.r, twiddle.i)，首段隐式位反转
+// ping-pong: A→B→A→...，每个方向 8 pass（偶数个），结果回到 A
+// pc: x = stage(0..7), y = 横向标志, z = 纹理索引(0..2)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, set = 0, binding = 0) uniform image2D uA[3];
+layout(rgba32f, set = 0, binding = 1) uniform image2D uB[3];
+layout(rgba32f, set = 0, binding = 2) readonly uniform image2D uButterfly;
+
+layout(push_constant) uniform Push {
+    vec4 pc;
+} PC;
+
+const int N = 256;
+
+vec2 cmul(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= N || gid.y >= N) return;
+
+    int  stage      = int(PC.pc.x);
+    bool horizontal = PC.pc.y > 0.5;
+    int  ti         = int(PC.pc.z);
+    bool even       = (stage & 1) == 0;   // even: 读A写B; odd: 读B写A
+
+    // 蝴蝶查找: 横向按列索引 gid.x，纵向按行索引 gid.y
+    ivec2 bcoord = horizontal ? ivec2(gid.x, stage) : ivec2(gid.y, stage);
+    vec4 bt = imageLoad(uButterfly, bcoord);
+    int idxU = int(bt.x);
+    int idxL = int(bt.y);
+    vec2 tw  = bt.zw;
+
+    ivec2 cU = horizontal ? ivec2(idxU, gid.y) : ivec2(gid.x, idxU);
+    ivec2 cL = horizontal ? ivec2(idxL, gid.y) : ivec2(gid.x, idxL);
+
+    vec4 su, sl;
+    if (even) { su = imageLoad(uA[ti], cU); sl = imageLoad(uA[ti], cL); }
+    else      { su = imageLoad(uB[ti], cU); sl = imageLoad(uB[ti], cL); }
+
+    // RG/BA 两个复数通道各做一次蝶形: out = a + W·b
+    vec4 r = vec4(su.xy + cmul(tw, sl.xy), su.zw + cmul(tw, sl.zw));
+
+    // 输出写回本调用坐标（自然顺序）
+    if (even) imageStore(uB[ti], gid, r);
+    else      imageStore(uA[ti], gid, r);
+}

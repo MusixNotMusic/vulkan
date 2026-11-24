@@ -1,7 +1,7 @@
 #version 450
 // 水面光照: Fresnel(Schlick) + 程序化天空反射 + 太阳高光(Blinn-Phong)
 //          + 波峰泡沫(Jacobian近似) + 视距深度吸收 + 波峰透光(SSS近似)
-// 现有水纹理降级为: 细节法线扰动 + 泡沫噪声源
+// 法线来源: FFT 斜率纹理 (Sx=dH/dx, Sz=dH/dz，物理正确的表面梯度)
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 1) in vec3 fragColor;
@@ -17,7 +17,11 @@ layout(binding = 0) uniform UniformData {
     vec3 sunDir;
 };
 
-layout(binding = 1) uniform sampler2D waterTex;
+layout(binding = 1) uniform sampler2D waterTex;      // 细节扰动 + 泡沫噪声源
+
+layout(binding = 2) uniform sampler2D texHeightDx;   // r=高度 h
+layout(binding = 3) uniform sampler2D texDzSx;       // b=斜率 Sx
+layout(binding = 4) uniform sampler2D texSz;         // r=斜率 Sz
 
 layout(location = 0) out vec4 outColor;
 
@@ -37,14 +41,18 @@ float noise2(vec2 p) {
 }
 
 void main() {
-    vec3 N = normalize(worldNormal);
+    // ---- 法线: FFT 斜率纹理（物理梯度）→ 表面法线 ----
+    float sx = texture(texDzSx, fragUV).b;   // dH/dx
+    float sz = texture(texSz,   fragUV).r;   // dH/dz
+    vec3 N = normalize(vec3(-sx, 1.0, -sz));
+
     vec3 V = normalize(cameraPos - worldPos);          // 指向相机
     vec3 L = normalize(sunDir);                        // 指向太阳
 
-    // ---- 细节法线扰动（纹理低频噪声 → 微扰动）----
+    // ---- 细节法线扰动（低频噪声 → 微扰动，补高频细节）----
     vec2 detailUV = fragUV * 24.0 + vec2(time * 0.02, time * 0.013);
     vec2 dn = texture(waterTex, detailUV).rg - 0.5;
-    N = normalize(N + vec3(dn.x, 0.0, dn.y) * 0.18);
+    N = normalize(N + vec3(dn.x, 0.0, dn.y) * 0.10);
 
     // ---- Fresnel (Schlick, F0=0.02 水) ----
     float cosTheta = clamp(dot(N, V), 0.0, 1.0);
@@ -73,7 +81,8 @@ void main() {
     vec3 waterColor = mix(deepColor, shallowColor, clarity);
 
     // ---- 波峰透光 (SSS 近似): 波峰高 + 逆光方向 → 内部散射提亮 ----
-    float crestHeight = clamp(worldPos.y * 0.9 + 0.4, 0.0, 1.0);
+    float height = texture(texHeightDx, fragUV).r;
+    float crestHeight = clamp(height * 0.7 + 0.4, 0.0, 1.0);
     float backLight = pow(max(dot(V, -L), 0.0), 3.0);
     waterColor += vec3(0.02, 0.14, 0.10) * crestHeight * backLight;
 
@@ -88,7 +97,7 @@ void main() {
     float foamNoise = texture(waterTex, fragUV * 12.0 + worldPos.xz * 0.15).r;
     foam *= 0.55 + 0.45 * foamNoise;
     // 波峰高度加权：只有真正高处的浪才起沫
-    foam *= clamp(worldPos.y * 1.2 + 0.3, 0.0, 1.0);
+    foam *= clamp(height * 1.0 + 0.3, 0.0, 1.0);
     color = mix(color, vec3(0.96, 0.98, 1.0), clamp(foam, 0.0, 1.0) * 0.75);
 
     outColor = vec4(color, 1.0);

@@ -1,0 +1,65 @@
+#version 450
+// FFT 海洋 pass1: 频谱时间演化 (Tessendorf)
+// h(k,t) = h0(k)·e^{+iωt} + h0*(-k)·e^{-iωt},  ω = √(g·k)  (深水色散)
+// 同 pass 顺带计算:
+//   Dx = -i·(kx/k)·h   (水平位移 x)
+//   Dz = -i·(kz/k)·h   (水平位移 z)
+//   Sx = +i·kx·h       (斜率 dH/dx)
+//   Sz = +i·kz·h       (斜率 dH/dz)
+// 打包: A0=(h, Dx), A1=(Dz, Sx), A2=(Sz, -)  —— RG/BA 各装一个复数信号
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, set = 0, binding = 0) readonly uniform image2D uH0;   // rg=h0(k), ba=conj(h0(-k))
+layout(rgba32f, set = 0, binding = 1) writeonly uniform image2D uOut[3];
+
+layout(push_constant) uniform Push {
+    vec4 pc;   // x = time
+} PC;
+
+const int   N          = 256;
+const float PATCH_SIZE = 60.0;
+const float PI         = 3.14159265358979;
+const float GRAVITY    = 9.81;
+
+vec2 cmul(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= N || gid.y >= N) return;
+
+    float t  = PC.pc.x;
+    float kn = float(gid.x) - float(N) * 0.5;
+    float km = float(gid.y) - float(N) * 0.5;
+    float kx = 2.0 * PI * kn / PATCH_SIZE;
+    float kz = 2.0 * PI * km / PATCH_SIZE;
+    float k  = sqrt(kx * kx + kz * kz);
+
+    if (k < 1e-5) {   // 零频分量清零（去均值，海面不整体升降）
+        imageStore(uOut[0], gid, vec4(0.0));
+        imageStore(uOut[1], gid, vec4(0.0));
+        imageStore(uOut[2], gid, vec4(0.0));
+        return;
+    }
+
+    vec4 h0 = imageLoad(uH0, gid);
+    float w = sqrt(GRAVITY * k);
+    float ct = cos(w * t), st = sin(w * t);
+    vec2 epos = vec2(ct,  st);   // e^{+iωt}
+    vec2 eneg = vec2(ct, -st);   // e^{-iωt}
+
+    // h = h0(k)·e^{iωt} + h0*(-k)·e^{-iωt}
+    vec2 h = cmul(h0.xy, epos) + cmul(h0.zw, eneg);
+
+    // -i·h = (h.y, -h.x) ; +i·h = (-h.y, h.x)
+    vec2 dx = vec2( h.y, -h.x) * (kx / k);
+    vec2 dz = vec2( h.y, -h.x) * (kz / k);
+    vec2 sx = vec2(-h.y,  h.x) * kx;
+    vec2 sz = vec2(-h.y,  h.x) * kz;
+
+    imageStore(uOut[0], gid, vec4(h,  dx));
+    imageStore(uOut[1], gid, vec4(dz, sx));
+    imageStore(uOut[2], gid, vec4(sz, vec2(0.0)));
+}

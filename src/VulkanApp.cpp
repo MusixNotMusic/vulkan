@@ -76,6 +76,11 @@ void VulkanApp::initVulkan() {
     // 水纹理 + 水面网格
     createWaterTexture();
     createWaterMesh();
+
+    // FFT 海洋（需要 commandPool/queue；图形 descriptor 绑定其输出纹理）
+    m_fftOcean = std::make_unique<FFTOcean>(m_physicalDevice, m_device,
+        m_commandPool, m_graphicsQueue, m_exeDir + "\\shaders");
+
     createUniformBuffers();
     createDescriptorSetLayout();
     createDescriptorPool();
@@ -803,6 +808,13 @@ void VulkanApp::recordCommandBuffer(uint32_t index) {
     renderPassInfo.clearValueCount = 1;
     renderPassInfo.pClearValues = &clearColor;
 
+    // FFT 海洋 compute（render pass 之前，同队列顺序执行）
+    if (m_fftOcean) {
+        float time = std::chrono::duration<float>(
+            std::chrono::high_resolution_clock::now() - m_startTime).count();
+        m_fftOcean->recordCompute(m_commandBuffers[index], time);
+    }
+
     vkCmdBeginRenderPass(m_commandBuffers[index], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
     vkCmdBindPipeline(m_commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
@@ -1064,7 +1076,8 @@ void VulkanApp::cleanup() {
     vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
     vkDestroyRenderPass(m_device, m_renderPass, nullptr);
 
-    // 新增资源清理
+    // 新增资源清理（FFT ocean 需在 command pool/device 销毁前释放）
+    if (m_fftOcean) m_fftOcean.reset();
     cleanupWaterTexture();
     cleanupWaterMesh();
     cleanupUniformBuffers();

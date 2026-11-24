@@ -13,6 +13,7 @@
 #include "vulkan/ShaderWatcher.h"
 #include "vulkan/WaterMesh.h"
 #include "vulkan/VulkanResources.h"
+#include "vulkan/FFTOcean.h"
 
 namespace vkb {
 
@@ -92,6 +93,9 @@ private:
     VkDeviceMemory m_indexBufferMemory = VK_NULL_HANDLE;
     uint32_t m_vertexCount = 0;
     uint32_t m_indexCount = 0;
+
+    // ---------- FFT Ocean ----------
+    std::unique_ptr<FFTOcean> m_fftOcean;
 
     // ---------- Uniform Buffer ----------
     std::vector<VkBuffer> m_uniformBuffers;

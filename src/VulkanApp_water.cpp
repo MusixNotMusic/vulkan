@@ -229,11 +229,22 @@ void VulkanApp::createDescriptorSetLayout() {
     samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     samplerBinding.pImmutableSamplers = nullptr;
 
-    VkDescriptorSetLayoutBinding bindings[] = { uboBinding, samplerBinding };
+    // FFT 海洋输出: 高度+位移 / 位移+斜率 / 斜率（顶点位移 + 片段法线）
+    VkDescriptorSetLayoutBinding fftBindings[3];
+    for (int i = 0; i < 3; ++i) {
+        fftBindings[i].binding = 2 + i;
+        fftBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        fftBindings[i].descriptorCount = 1;
+        fftBindings[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        fftBindings[i].pImmutableSamplers = nullptr;
+    }
+
+    VkDescriptorSetLayoutBinding bindings[] = { uboBinding, samplerBinding,
+        fftBindings[0], fftBindings[1], fftBindings[2] };
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
+    layoutInfo.bindingCount = 5;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS) {
@@ -244,7 +255,7 @@ void VulkanApp::createDescriptorSetLayout() {
 void VulkanApp::createDescriptorPool() {
     VkDescriptorPoolSize poolSizes[] = {
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT) },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT) },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT) * 4 },
     };
 
     VkDescriptorPoolCreateInfo poolInfo{};
@@ -285,7 +296,13 @@ void VulkanApp::createDescriptorSets() {
         imageInfo.imageView = m_waterTextureImageView;
         imageInfo.sampler = m_waterTextureSampler;
 
-        std::vector<VkWriteDescriptorSet> descriptorWrites(2);
+        // FFT 海洋输出纹理（compute 保持 GENERAL layout）
+        VkDescriptorImageInfo fftInfo[3];
+        fftInfo[0] = { m_fftOcean->sampler(), m_fftOcean->heightDxView(), VK_IMAGE_LAYOUT_GENERAL };
+        fftInfo[1] = { m_fftOcean->sampler(), m_fftOcean->dzSxView(),     VK_IMAGE_LAYOUT_GENERAL };
+        fftInfo[2] = { m_fftOcean->sampler(), m_fftOcean->szView(),       VK_IMAGE_LAYOUT_GENERAL };
+
+        std::vector<VkWriteDescriptorSet> descriptorWrites(5);
 
         descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         descriptorWrites[0].dstSet = m_descriptorSets[i];
@@ -303,7 +320,17 @@ void VulkanApp::createDescriptorSets() {
         descriptorWrites[1].descriptorCount = 1;
         descriptorWrites[1].pImageInfo = &imageInfo;
 
-        vkUpdateDescriptorSets(m_device, 2, descriptorWrites.data(), 0, nullptr);
+        for (int b = 0; b < 3; ++b) {
+            descriptorWrites[2 + b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[2 + b].dstSet = m_descriptorSets[i];
+            descriptorWrites[2 + b].dstBinding = 2 + b;
+            descriptorWrites[2 + b].dstArrayElement = 0;
+            descriptorWrites[2 + b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[2 + b].descriptorCount = 1;
+            descriptorWrites[2 + b].pImageInfo = &fftInfo[b];
+        }
+
+        vkUpdateDescriptorSets(m_device, 5, descriptorWrites.data(), 0, nullptr);
     }
 }
 
