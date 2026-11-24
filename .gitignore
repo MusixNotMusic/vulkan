@@ -1,0 +1,28 @@
+# Build
+build/
+out/
+bin/
+obj/
+
+# IDE
+.vscode/
+.vs/
+.idea/
+*.user
+*.suo
+
+# Trae / Editor
+.trae/
+
+# Compiled shaders in source tree (kept in build/)
+# shaders/*.spv
+
+# OS
+Thumbs.db
+.DS_Store
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake.in
