@@ -7,6 +7,8 @@
 #include <vector>
 #include <optional>
 
+#include "vulkan/ShaderWatcher.h"
+
 namespace vkb {
 
 struct QueueFamilyIndices {
@@ -85,6 +87,7 @@ private:
     void createFramebuffers();
     void createCommandPool();
     void createCommandBuffers();
+    void recordCommandBuffer(uint32_t index);
     void createSyncObjects();
 
     // ---------- Render Loop ----------
@@ -92,6 +95,16 @@ private:
     void drawFrame();
     void cleanupSwapchain();
     void recreateSwapchain();
+
+    // ---------- Shader Hot Reload ----------
+    ShaderWatcher m_shaderWatcher;
+    std::string m_shaderSourceDir = "shaders";
+    std::string m_shaderBinDir = "shaders"; // 运行时相对路径
+    void startShaderWatcher();
+    void tryHotReload();
+    bool recompileShader(const std::string& srcFile, const std::string& spvOut);
+    void destroyGraphicsPipelineOnly();
+    void recreateGraphicsPipeline();
 
     // ---------- Helpers ----------
     std::vector<const char*> getRequiredExtensions() const;

@@ -4,6 +4,7 @@
 #include <set>
 #include <stdexcept>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <algorithm>
 #include <array>
@@ -306,11 +307,18 @@ void VulkanApp::createLogicalDevice() {
 
     VkPhysicalDeviceFeatures deviceFeatures{};
 
+    // Device 层扩展：VK_KHR_swapchain
+    std::vector<const char*> deviceExtensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    };
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pEnabledFeatures = &deviceFeatures;
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
+    createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
     if (m_enableValidationLayers) {
         createInfo.enabledLayerCount = static_cast<uint32_t>(m_validationLayers.size());
@@ -725,40 +733,45 @@ void VulkanApp::createCommandBuffers() {
         throw std::runtime_error("Failed to allocate command buffers!");
     }
 
+    // 初始录制一遍
     for (size_t i = 0; i < m_commandBuffers.size(); ++i) {
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        recordCommandBuffer(i);
+    }
+}
 
-        if (vkBeginCommandBuffer(m_commandBuffers[i], &beginInfo) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to begin recording command buffer!");
-        }
+void VulkanApp::recordCommandBuffer(uint32_t index) {
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-        VkRenderPassBeginInfo renderPassInfo{};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = m_renderPass;
-        renderPassInfo.framebuffer = m_swapchainFramebuffers[i];
-        renderPassInfo.renderArea = { { 0, 0 }, m_swapchainExtent };
+    if (vkBeginCommandBuffer(m_commandBuffers[index], &beginInfo) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to begin recording command buffer!");
+    }
 
-        VkClearValue clearColor = {};
-        clearColor.color.float32[0] = 0.1f;
-        clearColor.color.float32[1] = 0.1f;
-        clearColor.color.float32[2] = 0.1f;
-        clearColor.color.float32[3] = 1.0f;
-        renderPassInfo.clearValueCount = 1;
-        renderPassInfo.pClearValues = &clearColor;
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = m_renderPass;
+    renderPassInfo.framebuffer = m_swapchainFramebuffers[index];
+    renderPassInfo.renderArea = { { 0, 0 }, m_swapchainExtent };
 
-        vkCmdBeginRenderPass(m_commandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    VkClearValue clearColor = {};
+    clearColor.color.float32[0] = 0.1f;
+    clearColor.color.float32[1] = 0.1f;
+    clearColor.color.float32[2] = 0.1f;
+    clearColor.color.float32[3] = 1.0f;
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearColor;
 
-        vkCmdBindPipeline(m_commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
+    vkCmdBeginRenderPass(m_commandBuffers[index], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-        // Draw a triangle (vertex data is in shader)
-        vkCmdDraw(m_commandBuffers[i], 3, 1, 0, 0);
+    vkCmdBindPipeline(m_commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
 
-        vkCmdEndRenderPass(m_commandBuffers[i]);
+    // Draw a triangle (vertex data is in shader)
+    vkCmdDraw(m_commandBuffers[index], 3, 1, 0, 0);
 
-        if (vkEndCommandBuffer(m_commandBuffers[i]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to record command buffer!");
-        }
+    vkCmdEndRenderPass(m_commandBuffers[index]);
+
+    if (vkEndCommandBuffer(m_commandBuffers[index]) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to record command buffer!");
     }
 }
 
@@ -792,8 +805,10 @@ void VulkanApp::createSyncObjects() {
 // ============================================================================
 
 void VulkanApp::mainLoop() {
+    startShaderWatcher();
     while (!glfwWindowShouldClose(m_window)) {
         glfwPollEvents();
+        tryHotReload();
         drawFrame();
     }
     vkDeviceWaitIdle(m_device);
@@ -817,10 +832,7 @@ void VulkanApp::drawFrame() {
     vkResetFences(m_device, 1, &m_inFlightFences[m_currentFrame]);
 
     vkResetCommandBuffer(m_commandBuffers[imageIndex], 0);
-    // Re-record command buffer (to handle framebuffer size changes)
-    // For simplicity we don't re-record here; but need reset to allow reuse.
-    // Actually we need to re-record if swapchain changed. Let's do it properly:
-    // (We'll re-record only when swapchain is recreated via createCommandBuffers)
+    recordCommandBuffer(imageIndex);
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -863,10 +875,79 @@ void VulkanApp::drawFrame() {
 }
 
 // ============================================================================
+// Shader Hot Reload
+// ============================================================================
+
+void VulkanApp::startShaderWatcher() {
+    m_shaderWatcher.start(m_shaderSourceDir, { ".vert", ".frag", ".comp", ".geom", ".tesc", ".tese" });
+}
+
+void VulkanApp::tryHotReload() {
+    if (!m_shaderWatcher.pollDirty()) return;
+
+    std::cout << "[HotReload] Recompiling shaders..." << std::endl;
+
+    // 重新编译 .vert 和 .frag（编译失败则不重建 Pipeline，保留旧的）
+    bool vertOk = recompileShader(
+        m_shaderSourceDir + "/shader.vert",
+        m_shaderBinDir + "/shader.vert.spv");
+    bool fragOk = recompileShader(
+        m_shaderSourceDir + "/shader.frag",
+        m_shaderBinDir + "/shader.frag.spv");
+
+    if (!vertOk || !fragOk) {
+        std::cerr << "[HotReload] Shader compilation FAILED, keeping old Pipeline." << std::endl;
+        return;
+    }
+
+    // 等待 GPU 所有帧执行完毕（安全销毁旧 Pipeline）
+    vkDeviceWaitIdle(m_device);
+
+    destroyGraphicsPipelineOnly();
+    recreateGraphicsPipeline();
+
+    std::cout << "[HotReload] Pipeline rebuilt successfully!" << std::endl;
+}
+
+bool VulkanApp::recompileShader(const std::string& srcFile, const std::string& spvOut) {
+    // 定位 glslc（优先从环境变量 VULKAN_SDK）
+    std::string glslc = "glslc";
+    const char* sdk = getenv("VULKAN_SDK");
+    if (sdk && sdk[0] != '\0') {
+        glslc = std::string(sdk) + "/Bin/glslc.exe";
+    }
+
+    // 构造命令：glslc shader.vert -o shader.vert.spv
+    std::string cmd = "\"" + glslc + "\" \"" + srcFile + "\" -o \"" + spvOut + "\" 2>&1";
+    int ret = system(cmd.c_str());
+    return ret == 0;
+}
+
+void VulkanApp::destroyGraphicsPipelineOnly() {
+    // PipelineLayout 可以复用（着色器接口没变的话）
+    vkDestroyPipeline(m_device, m_graphicsPipeline, nullptr);
+    m_graphicsPipeline = VK_NULL_HANDLE;
+}
+
+void VulkanApp::recreateGraphicsPipeline() {
+    // 销毁旧 Pipeline（在 destroyGraphicsPipelineOnly 中已销毁）
+    createGraphicsPipeline();
+
+    // 重新录制所有 command buffers（因为里面绑定的 pipeline handle 变了）
+    for (size_t i = 0; i < m_commandBuffers.size(); ++i) {
+        vkResetCommandBuffer(m_commandBuffers[i], 0);
+        recordCommandBuffer(static_cast<uint32_t>(i));
+    }
+}
+
+// ============================================================================
 // Cleanup
 // ============================================================================
 
 void VulkanApp::cleanup() {
+    // 停止文件监控线程
+    m_shaderWatcher.stop();
+
     if (m_device == VK_NULL_HANDLE) return;
 
     cleanupSwapchain();
