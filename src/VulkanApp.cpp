@@ -49,6 +49,16 @@ void VulkanApp::initWindow() {
 // ============================================================================
 
 void VulkanApp::initVulkan() {
+    // 获取可执行文件所在目录
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    std::string fullPath(exePath);
+    size_t pos = fullPath.find_last_of("\\/");
+    if (pos != std::string::npos) {
+        m_exeDir = fullPath.substr(0, pos);
+    }
+    std::cout << "[VulkanApp] exeDir=" << m_exeDir << std::endl;
+
     createInstance();
     setupDebugMessenger();
     createSurface();
@@ -558,8 +568,8 @@ VkShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) cons
 }
 
 void VulkanApp::createGraphicsPipeline() {
-    auto vertShaderCode = readFile("shaders/shader.vert.spv");
-    auto fragShaderCode = readFile("shaders/shader.frag.spv");
+    auto vertShaderCode = readFile(m_exeDir + "\\shaders\\shader.vert.spv");
+    auto fragShaderCode = readFile(m_exeDir + "\\shaders\\shader.frag.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -780,6 +790,11 @@ void VulkanApp::recordCommandBuffer(uint32_t index) {
 // ============================================================================
 
 void VulkanApp::createSyncObjects() {
+    // MAX_FRAMES_IN_FLIGHT 不能超过 swapchain image 数量
+    int imageCount = static_cast<int>(m_swapchainImages.size());
+    MAX_FRAMES_IN_FLIGHT = std::min(MAX_FRAMES_IN_FLIGHT, std::max(imageCount, 2));
+    if (MAX_FRAMES_IN_FLIGHT < 2) MAX_FRAMES_IN_FLIGHT = 2;
+
     m_imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     m_renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
@@ -879,7 +894,9 @@ void VulkanApp::drawFrame() {
 // ============================================================================
 
 void VulkanApp::startShaderWatcher() {
-    m_shaderWatcher.start(m_shaderSourceDir, { ".vert", ".frag", ".comp", ".geom", ".tesc", ".tese" });
+    // 用绝对路径监控
+    std::string absShaderDir = m_exeDir + "\\" + m_shaderSourceDir;
+    m_shaderWatcher.start(absShaderDir, { ".vert", ".frag", ".comp", ".geom", ".tesc", ".tese" });
 }
 
 void VulkanApp::tryHotReload() {
@@ -887,13 +904,14 @@ void VulkanApp::tryHotReload() {
 
     std::cout << "[HotReload] Recompiling shaders..." << std::endl;
 
-    // 重新编译 .vert 和 .frag（编译失败则不重建 Pipeline，保留旧的）
-    bool vertOk = recompileShader(
-        m_shaderSourceDir + "/shader.vert",
-        m_shaderBinDir + "/shader.vert.spv");
-    bool fragOk = recompileShader(
-        m_shaderSourceDir + "/shader.frag",
-        m_shaderBinDir + "/shader.frag.spv");
+    // 用绝对路径重新编译（防止进程工作目录不确定）
+    std::string srcVert = m_exeDir + "/shaders/shader.vert";
+    std::string srcFrag = m_exeDir + "/shaders/shader.frag";
+    std::string outVert = m_exeDir + "/shaders/shader.vert.spv";
+    std::string outFrag = m_exeDir + "/shaders/shader.frag.spv";
+
+    bool vertOk = recompileShader(srcVert, outVert);
+    bool fragOk = recompileShader(srcFrag, outFrag);
 
     if (!vertOk || !fragOk) {
         std::cerr << "[HotReload] Shader compilation FAILED, keeping old Pipeline." << std::endl;
@@ -903,7 +921,6 @@ void VulkanApp::tryHotReload() {
     // 等待 GPU 所有帧执行完毕（安全销毁旧 Pipeline）
     vkDeviceWaitIdle(m_device);
 
-    destroyGraphicsPipelineOnly();
     recreateGraphicsPipeline();
 
     std::cout << "[HotReload] Pipeline rebuilt successfully!" << std::endl;
@@ -911,16 +928,47 @@ void VulkanApp::tryHotReload() {
 
 bool VulkanApp::recompileShader(const std::string& srcFile, const std::string& spvOut) {
     // 定位 glslc（优先从环境变量 VULKAN_SDK）
-    std::string glslc = "glslc";
+    std::string glslc = "glslc.exe";
     const char* sdk = getenv("VULKAN_SDK");
     if (sdk && sdk[0] != '\0') {
-        glslc = std::string(sdk) + "/Bin/glslc.exe";
+        glslc = std::string(sdk) + "\\Bin\\glslc.exe";
     }
 
-    // 构造命令：glslc shader.vert -o shader.vert.spv
-    std::string cmd = "\"" + glslc + "\" \"" + srcFile + "\" -o \"" + spvOut + "\" 2>&1";
-    int ret = system(cmd.c_str());
-    return ret == 0;
+    std::cout << "[HotReload] glslc=" << glslc << std::endl;
+    std::cout << "[HotReload] src=" << srcFile << std::endl;
+
+    // 用 CreateProcessW 直接调用，避免 system/cmd 对路径的奇怪处理
+    std::wstring wGlslc(glslc.begin(), glslc.end());
+    std::wstring wArgs = L"\"" + wGlslc + L"\" \"" +
+        std::wstring(srcFile.begin(), srcFile.end()) + L"\" -o \"" +
+        std::wstring(spvOut.begin(), spvOut.end()) + L"\"";
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+
+    BOOL ok = CreateProcessW(
+        nullptr,                    // lpApplicationName
+        const_cast<LPWSTR>(wArgs.c_str()), // lpCommandLine
+        nullptr, nullptr, FALSE,
+        CREATE_NO_WINDOW,           // dwCreationFlags
+        nullptr, nullptr,
+        &si, &pi
+    );
+
+    if (!ok) {
+        std::cerr << "[HotReload] CreateProcessW failed, error=" << GetLastError() << std::endl;
+        return false;
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    std::cout << "[HotReload] glslc exit=" << exitCode << std::endl;
+    return exitCode == 0;
 }
 
 void VulkanApp::destroyGraphicsPipelineOnly() {
@@ -930,7 +978,12 @@ void VulkanApp::destroyGraphicsPipelineOnly() {
 }
 
 void VulkanApp::recreateGraphicsPipeline() {
-    // 销毁旧 Pipeline（在 destroyGraphicsPipelineOnly 中已销毁）
+    // 销毁旧的 Pipeline 和 PipelineLayout（createGraphicsPipeline 会重新创建 layout）
+    vkDestroyPipeline(m_device, m_graphicsPipeline, nullptr);
+    vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
+    m_graphicsPipeline = VK_NULL_HANDLE;
+    m_pipelineLayout = VK_NULL_HANDLE;
+
     createGraphicsPipeline();
 
     // 重新录制所有 command buffers（因为里面绑定的 pipeline handle 变了）

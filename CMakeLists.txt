@@ -63,9 +63,13 @@ endif()
 
 add_dependencies(${PROJECT_NAME} Shaders)
 
-# Copy shaders to runtime location
+# Copy shaders to runtime location (both .spv and source files for hot reload)
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${SHADER_OUT_DIR}
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${SHADER_SRC_DIR}
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
+    COMMENT "Copying shaders (spv + source) to runtime dir"
 )

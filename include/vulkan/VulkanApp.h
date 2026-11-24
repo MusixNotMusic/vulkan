@@ -66,7 +66,7 @@ private:
     std::vector<VkCommandBuffer> m_commandBuffers;
 
     // ---------- Sync ----------
-    static const int MAX_FRAMES_IN_FLIGHT = 2;
+    int MAX_FRAMES_IN_FLIGHT = 3; // 初始值，createSwapchain 后会调整
     std::vector<VkSemaphore> m_imageAvailableSemaphores;
     std::vector<VkSemaphore> m_renderFinishedSemaphores;
     std::vector<VkFence> m_inFlightFences;
@@ -98,6 +98,7 @@ private:
 
     // ---------- Shader Hot Reload ----------
     ShaderWatcher m_shaderWatcher;
+    std::string m_exeDir;   // 可执行文件所在目录（热重载时用绝对路径）
     std::string m_shaderSourceDir = "shaders";
     std::string m_shaderBinDir = "shaders"; // 运行时相对路径
     void startShaderWatcher();
