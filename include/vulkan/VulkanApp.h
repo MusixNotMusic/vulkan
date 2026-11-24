@@ -6,8 +6,13 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <memory>
+#include <cstdint>
+#include <chrono>
 
 #include "vulkan/ShaderWatcher.h"
+#include "vulkan/WaterMesh.h"
+#include "vulkan/VulkanResources.h"
 
 namespace vkb {
 
@@ -25,9 +30,18 @@ struct SwapchainSupportDetails {
     std::vector<VkPresentModeKHR> presentModes;
 };
 
+// MVP + Time Uniform Buffer (std140 布局)
+struct WaterUniformData {
+    float model[16];
+    float view[16];
+    float proj[16];
+    float time;
+    float pad[3]; // 对齐 16 字节
+};
+
 class VulkanApp {
 public:
-    VulkanApp(uint32_t width = 800, uint32_t height = 600, const std::string& title = "Vulkan Base");
+    VulkanApp(uint32_t width = 800, uint32_t height = 600, const std::string& title = "Vulkan Water");
     ~VulkanApp();
 
     void run();
@@ -57,6 +71,32 @@ private:
     std::vector<VkImageView> m_swapchainImageViews;
     std::vector<VkFramebuffer> m_swapchainFramebuffers;
 
+    // ---------- Water Texture ----------
+    VkImage m_waterTexture = VK_NULL_HANDLE;
+    VkDeviceMemory m_waterTextureMemory = VK_NULL_HANDLE;
+    VkImageView m_waterTextureImageView = VK_NULL_HANDLE;
+    VkSampler m_waterTextureSampler = VK_NULL_HANDLE;
+    uint32_t m_waterTexWidth = 0;
+    uint32_t m_waterTexHeight = 0;
+
+    // ---------- Water Mesh ----------
+    VkBuffer m_vertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_vertexBufferMemory = VK_NULL_HANDLE;
+    VkBuffer m_indexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_indexBufferMemory = VK_NULL_HANDLE;
+    uint32_t m_vertexCount = 0;
+    uint32_t m_indexCount = 0;
+
+    // ---------- Uniform Buffer ----------
+    std::vector<VkBuffer> m_uniformBuffers;
+    std::vector<VkDeviceMemory> m_uniformBufferMemories;
+    std::vector<void*> m_uniformBufferMapped;
+
+    // ---------- Descriptors ----------
+    VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> m_descriptorSets;
+
     // ---------- Rendering ----------
     VkRenderPass m_renderPass = VK_NULL_HANDLE;
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
@@ -71,6 +111,9 @@ private:
     std::vector<VkSemaphore> m_renderFinishedSemaphores;
     std::vector<VkFence> m_inFlightFences;
     size_t m_currentFrame = 0;
+
+    // ---------- Time ----------
+    std::chrono::high_resolution_clock::time_point m_startTime;
 
     // ---------- Initialization ----------
     void initWindow();
@@ -90,6 +133,14 @@ private:
     void recordCommandBuffer(uint32_t index);
     void createSyncObjects();
 
+    void createWaterTexture();
+    void createWaterMesh();
+    void createUniformBuffers();
+    void createDescriptorSetLayout();
+    void createDescriptorPool();
+    void createDescriptorSets();
+    void updateUniformBuffers();
+
     // ---------- Render Loop ----------
     void mainLoop();
     void drawFrame();
@@ -98,9 +149,9 @@ private:
 
     // ---------- Shader Hot Reload ----------
     ShaderWatcher m_shaderWatcher;
-    std::string m_exeDir;   // 可执行文件所在目录（热重载时用绝对路径）
+    std::string m_exeDir;
     std::string m_shaderSourceDir = "shaders";
-    std::string m_shaderBinDir = "shaders"; // 运行时相对路径
+    std::string m_shaderBinDir = "shaders";
     void startShaderWatcher();
     void tryHotReload();
     bool recompileShader(const std::string& srcFile, const std::string& spvOut);
@@ -127,6 +178,10 @@ private:
 
     // ---------- Cleanup ----------
     void cleanup();
+    void cleanupWaterTexture();
+    void cleanupWaterMesh();
+    void cleanupUniformBuffers();
+    void cleanupDescriptors();
 
     // ---------- Validation ----------
     bool m_enableValidationLayers = true;

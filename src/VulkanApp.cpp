@@ -17,7 +17,9 @@ namespace vkb {
 // ============================================================================
 
 VulkanApp::VulkanApp(uint32_t width, uint32_t height, const std::string& title)
-    : m_width(width), m_height(height), m_title(title) {}
+    : m_width(width), m_height(height), m_title(title) {
+    m_startTime = std::chrono::high_resolution_clock::now();
+}
 
 VulkanApp::~VulkanApp() {
     cleanup();
@@ -67,9 +69,20 @@ void VulkanApp::initVulkan() {
     createSwapchain();
     createImageViews();
     createRenderPass();
+
+    // CommandPool 必须先创建（水纹理/网格上传需要它）
+    createCommandPool();
+
+    // 水纹理 + 水面网格
+    createWaterTexture();
+    createWaterMesh();
+    createUniformBuffers();
+    createDescriptorSetLayout();
+    createDescriptorPool();
+    createDescriptorSets();
+
     createGraphicsPipeline();
     createFramebuffers();
-    createCommandPool();
     createCommandBuffers();
     createSyncObjects();
 }
@@ -588,11 +601,29 @@ void VulkanApp::createGraphicsPipeline() {
 
     VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 
-    // Vertex input
+    // ---------- Vertex Input ----------
+    VkVertexInputBindingDescription bindingDesc{};
+    bindingDesc.binding = 0;
+    bindingDesc.stride = sizeof(WaterVertex);
+    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrDesc[3] = {};
+    // Position (vec3)
+    attrDesc[0].binding = 0; attrDesc[0].location = 0;
+    attrDesc[0].format = VK_FORMAT_R32G32B32_SFLOAT; attrDesc[0].offset = offsetof(WaterVertex, x);
+    // UV (vec2)
+    attrDesc[1].binding = 0; attrDesc[1].location = 1;
+    attrDesc[1].format = VK_FORMAT_R32G32_SFLOAT;     attrDesc[1].offset = offsetof(WaterVertex, u);
+    // Color (vec3)
+    attrDesc[2].binding = 0; attrDesc[2].location = 2;
+    attrDesc[2].format = VK_FORMAT_R32G32B32_SFLOAT; attrDesc[2].offset = offsetof(WaterVertex, r);
+
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
+    vertexInputInfo.vertexAttributeDescriptionCount = 3;
+    vertexInputInfo.pVertexAttributeDescriptions = attrDesc;
 
     // Input assembly
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -658,7 +689,8 @@ void VulkanApp::createGraphicsPipeline() {
     // Pipeline layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &m_descriptorSetLayout;
     pipelineLayoutInfo.pushConstantRangeCount = 0;
 
     if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
@@ -764,9 +796,9 @@ void VulkanApp::recordCommandBuffer(uint32_t index) {
     renderPassInfo.renderArea = { { 0, 0 }, m_swapchainExtent };
 
     VkClearValue clearColor = {};
-    clearColor.color.float32[0] = 0.1f;
-    clearColor.color.float32[1] = 0.1f;
-    clearColor.color.float32[2] = 0.1f;
+    clearColor.color.float32[0] = 0.02f;
+    clearColor.color.float32[1] = 0.05f;
+    clearColor.color.float32[2] = 0.12f;
     clearColor.color.float32[3] = 1.0f;
     renderPassInfo.clearValueCount = 1;
     renderPassInfo.pClearValues = &clearColor;
@@ -775,8 +807,19 @@ void VulkanApp::recordCommandBuffer(uint32_t index) {
 
     vkCmdBindPipeline(m_commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
 
-    // Draw a triangle (vertex data is in shader)
-    vkCmdDraw(m_commandBuffers[index], 3, 1, 0, 0);
+    // Vertex buffer binding
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(m_commandBuffers[index], 0, 1, &m_vertexBuffer, &offset);
+
+    // Index buffer
+    vkCmdBindIndexBuffer(m_commandBuffers[index], m_indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+    // Descriptor set (uniform + texture) — 这里用 m_currentFrame 索引
+    vkCmdBindDescriptorSets(m_commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS,
+        m_pipelineLayout, 0, 1, &m_descriptorSets[m_currentFrame], 0, nullptr);
+
+    // Draw indexed (水面网格)
+    vkCmdDrawIndexed(m_commandBuffers[index], m_indexCount, 1, 0, 0, 0);
 
     vkCmdEndRenderPass(m_commandBuffers[index]);
 
@@ -831,6 +874,9 @@ void VulkanApp::mainLoop() {
 
 void VulkanApp::drawFrame() {
     vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
+
+    // 每帧更新 MVP + Time uniform
+    updateUniformBuffers();
 
     uint32_t imageIndex;
     VkResult result = vkAcquireNextImageKHR(
@@ -1003,6 +1049,8 @@ void VulkanApp::cleanup() {
 
     if (m_device == VK_NULL_HANDLE) return;
 
+    vkDeviceWaitIdle(m_device);
+
     cleanupSwapchain();
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -1015,6 +1063,13 @@ void VulkanApp::cleanup() {
     vkDestroyPipeline(m_device, m_graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
     vkDestroyRenderPass(m_device, m_renderPass, nullptr);
+
+    // 新增资源清理
+    cleanupWaterTexture();
+    cleanupWaterMesh();
+    cleanupUniformBuffers();
+    cleanupDescriptors();
+
     vkDestroyDevice(m_device, nullptr);
 
     if (m_enableValidationLayers) {
